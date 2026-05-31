@@ -8,10 +8,17 @@ use xcap::Monitor;
 
 fn primary_monitor() -> AppResult<Monitor> {
     let monitors = Monitor::all().map_err(|e| AppError::Capture(e.to_string()))?;
-    monitors
-        .into_iter()
-        .find(|m| m.is_primary())
-        .ok_or_else(|| AppError::Capture("No primary monitor found".into()))
+    // Prefer the OS-designated primary monitor; fall back to the first one.
+    let mut first: Option<Monitor> = None;
+    for m in monitors {
+        if first.is_none() {
+            first = Some(m.clone());
+        }
+        if m.is_primary().unwrap_or(false) {
+            return Ok(m);
+        }
+    }
+    first.ok_or_else(|| AppError::Capture("No monitor found".into()))
 }
 
 fn encode_png_data_url(img: &image::RgbaImage) -> AppResult<String> {
@@ -50,12 +57,12 @@ pub async fn capture_region(region: Region) -> AppResult<CaptureResult> {
     }
 
     let monitor = primary_monitor()?;
-    let full = monitor
-        .capture_image()
+    let max_w = monitor
+        .width()
         .map_err(|e| AppError::Capture(e.to_string()))?;
-
-    let max_w = full.width();
-    let max_h = full.height();
+    let max_h = monitor
+        .height()
+        .map_err(|e| AppError::Capture(e.to_string()))?;
 
     let x = region.x.max(0) as u32;
     let y = region.y.max(0) as u32;
@@ -63,11 +70,13 @@ pub async fn capture_region(region: Region) -> AppResult<CaptureResult> {
         return Err(AppError::Capture("Region outside monitor bounds".into()));
     }
 
-    // Clamp so crop never exceeds the captured frame.
+    // Clamp so the crop never exceeds the monitor frame.
     let w = region.width.min(max_w - x);
     let h = region.height.min(max_h - y);
 
-    let cropped = image::imageops::crop_imm(&full, x, y, w, h).to_image();
+    let cropped = monitor
+        .capture_region(x, y, w, h)
+        .map_err(|e| AppError::Capture(e.to_string()))?;
     let data_url = encode_png_data_url(&cropped)?;
 
     log::info!("captured region {}x{} at ({},{})", w, h, x, y);
